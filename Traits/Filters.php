@@ -4,33 +4,41 @@ namespace App\Http\Controllers\Traits;
 
 trait Filters
 {
-    //  Приклад масиву
+    // Приклад масиву що отримує модель для фільтрації, прописана властивість моелі
+    // Де colName-назва колонки в таблиці, requestName-ім'я властивості в request,  type-тип співставлення
+    // Якщо параметр додати в додатковий масив, вони стають OR
     //  protected $filters = [
-    //     'peopleList' => [
-    //         [Це буде група or
-    //             ['colName' => 'last_name', 'requestName' => 'pibFind', 'type' => 'like'],
-    //             ['colName' => 'first_name', 'requestName' => 'pibFind', 'type' => 'like'],
-    //             ['colName' => 'middle_name', 'requestName' => 'pibFind', 'type' => 'like'],
-    //         ],
-    //         ['colName' => 'last_name', 'requestName' => 'last_name', 'type' => 'like'], а це просто where
-    //     ],
+        // 'statesFilters' => [
+        //     [
+        //         ['colName' => 'position', 'requestName' => 'stateName', 'type' => 'like'],
+        //         ['colName' => 'squad', 'requestName' => 'stateName', 'type' => 'like'],
+        //         ['colName' => 'platoon', 'requestName' => 'stateName', 'type' => 'like'],
+        //     ],
+        //     ['colName' => 'base'], 
+        //     ['colName' => 'company'], 
+        //     ['colName' => 'num'],
+        //     ['colName' => 'stateRound'],
+        //     ['colName' => 'stateRank'],
+        //     ['colName' => 'delete'],
+        // ],
     // ];
 
     /**
      * Додає фільтра до запиту, дані про фільтра бере з змінної що має знаходитись в моделі і мати назву filters, в зміній має бути іменований масив, кожна з комірок якого є масивом. Ячейки мають мати імена що застосовуться для їх пошуку та виклику по $filtersName. Масиви комірок мають мати такі параметри ['colName' => '', requestName => '', 'type' => ''] де: colName - ім'я колонки, requestName - при потребі ім'я змінної (за замовчуванням дорівнює colName), type - тип порівняння (за замовчуванням дорівнює '=')
-     * @param mixed $collection
-     * @param mixed $request
-     * @param string|array $filtersName
-     * @param mixed $connections
+     * @param mixed $collection колекція що отримана з моделі
+     * @param mixed $request запит з якого фільтрується
+     * @param string|array $filtersName ім'я фільтрів що будуть отримуватись
+     * @param mixed $connections назви підключень по яким фільтрувати, якщо нема то по основному запиту
      * @return mixed
      */
     public function filter($collection, $request, string|array $filtersName, array $connections = [])
     {
-        // dump($collection);
         foreach ($collection as $coll_key => $coll_item) {
-            // dump($coll_item->id);
+            // Розбираю колекцію по елементам
             if ($connections) {
+                // якщо є підключення то працюю по ним
                 foreach ($connections as $connectionItem) {
+                    // Розбиваю підключеняння по крапці, щоб знати скільки елементів перевіряти
                     $connectionArr = explode('.', $connectionItem);
                     $connection = $connectionArr[0];
 
@@ -38,15 +46,17 @@ trait Filters
                     $mainRule = (isset($connectionArr[1]) && ((is_integer($connectionArr[1]) && $connectionArr[1] > 0) || $connectionArr[1] === 'all')) 
                     ? $connectionArr[1] : 1;
 
-                    if (is_array($coll_item->$connection) && !empty(reset($coll_item->$connection))) {
+                    // Перевіряю чи є підключення пустим, якщо так то пропускаю
+                    if ((get_class($coll_item->$connection) === 'Illuminate\Database\Eloquent\Collection'
+                    && !empty($coll_item->$connection->first()))
+                    || (is_array($coll_item->$connection) && !empty(reset($coll_item->$connection)))) {
                         $notDelete = false;
                     } else {
-                        // dump('пропуск');
                         $notDelete = true;
                         continue;
                     }
                     
-
+                    // Розбиваю по елементам
                     if ($mainRule === 'all') {
                         foreach ($coll_item->$connection as $object) {
                             if ($this->filterBody($request, $filtersName, $object)) {
@@ -60,7 +70,7 @@ trait Filters
                         foreach ($coll_item->$connection as $object) {
                             if ($count > $mainRule) break;
 
-                            $filterRes = $this->filterBody($request, $filtersName, $object, $collection[$coll_key]->id);
+                            $filterRes = $this->filterBody($request, $filtersName, $object);
                             if ($mainRule > 1 && $filterRes) {
                                 $notDelete = true;
                                 break;
@@ -76,53 +86,48 @@ trait Filters
                 }
             } else $notDelete = $this->filterBody($request, $filtersName, $coll_item);
 
-            // dump('дійшов');
-
-            if (!$notDelete) 
-            {
-                // Перевіряв чому прибирало не того
-                // dump('Не під ' . $coll_key . ' ' . $collection[$coll_key]->id);
-                // dump($collection[$coll_key]);
-                unset($collection[$coll_key]);
-            } else {
-                // dump('Так ' . $collection[$coll_key]->id);
-            }
-        
+            if (!$notDelete) unset($collection[$coll_key]);
         }
         return $collection;
     }
 
     /**
-     * Шукає та перевіряє конкретне значення
+     * Тіло фільтра, шукає та перевіряє конкретне значення
      * @param mixed $collection
      * @param mixed $request
      * @param string|array $filtersName
      * @return bool
      */
-    protected function filterBody($request, $filtersName, $object, $id = '')
+    protected function filterBody($request, $filtersName, $object)
     {
+        // Перевірка відповідності фільтрів
         if (!is_array($filtersName) && !isset($object->filters[$filtersName])) return true;
         
+        // Замість імені фільтрів що є в моделі можна передати фільтра в самому методі
         $filters = is_array($filtersName) ? $filtersName : $object->filters[$filtersName];
-        // dd($filters);
-        //Цей foreach потрібен для або, щоб можна було шукати в декількох полях
-        foreach ($filters as $filters_it) {
-            $filter_arr = !empty($filters_it[0]['colName']) ? $filters_it : [$filters_it];
 
+        foreach ($filters as $filters_it) {
+            // Якщо це не OR обертаю в масив
+            $filter_arr = !empty(reset($filters_it)['colName']) ? $filters_it : [$filters_it];
+
+            // Ініціалізація прапорців
             $find = false;
             $notNullValue = 0;
 
+            //Цей foreach потрібен для або, щоб можна було шукати в декількох полях як OR
             foreach ($filter_arr as $filter) {
 
+                // Отримую значення фільтрів
                 $type = !empty($filter['type']) ? $filter['type'] : '=';
-                $colName = $filter['colName'];
+                if (!empty($filter['colName'])) $colName = $filter['colName'];
+                else continue;
 
                 if (isset($filter['value'])) {
                     $filterValue = $filter['value'];
                     $notNullValue++;
                 } else {
                     $requestName = !empty($filter['requestName']) ? $filter['requestName'] : $filter['colName'];
-                    if (isset($request->$requestName) && (!empty($request->$requestName) || is_array($request->$requestName))) {
+                    if ($request->has($requestName) && (!empty($request->$requestName) || is_array($request->$requestName))) {
                         $filterValue = $request->$requestName;
                         $notNullValue++;
                     }
@@ -134,7 +139,8 @@ trait Filters
                 }
                 else continue;
 
-                if (is_string($filterValue) || is_integer($filterValue)) {
+                // Сама перевірка за умовами
+                if (is_string($filterValue) || is_integer($filterValue) || is_bool($filterValue)) {
 
                     if (is_string($filterValue)) {
                         $value = $value . '';
@@ -142,53 +148,45 @@ trait Filters
                     } else {
                         $value = $value * 1;
                     }
-                    
-                    // dump('фільтр');
-                    // dump($filterValue);
-                    // dump('значення');
-                    // dump($value);
 
                     if ($type === 'like') {
                         $filter_ii = str_replace('/', '\/', addslashes($filterValue));
-                        // dump($filter_ii);
                         if (preg_match('/'. $filter_ii .'/ui', addslashes($value))) $find = true;
                     } else {
                         switch ($type) {
                             case '>':
                                 if($value > $filterValue) $find = true;
-                                // dump($value . ' > ' . $filterValue);
+                                // dump($value . ' > ' . $filterValue . ' ' . $find);
                                 break;
                             
                             case '<':
                                 if($value < $filterValue) $find = true;
-                                // dump($value . ' < ' . $filterValue);
+                                // dump($value . ' < ' . $filterValue . ' ' . $find);
                                 break;
                             
                             case '>=':
                                 if($value >= $filterValue) $find = true;
-                                // dump($value . ' >= ' . $filterValue);
+                                // dump($value . ' >= ' . $filterValue . ' ' . $find);
                                 break;
                             
                             case '<=':
                                 if($value <= $filterValue) $find = true;
-                                // dump($value . ' <= ' . $filterValue);
+                                // dump($value . ' <= ' . $filterValue . ' ' . $find);
                                 break;
                             
                             case '!':
                                 if($value !== $filterValue) $find = true;
-                                // dump($value . ' != ' . $filterValue . ' ' . $id);
+                                // dump($value . ' != ' . $filterValue . ' ' . $find);
                                 break;
                             
                             default:
                                 if($value === $filterValue) $find = true;
-                                // dump($value . ' = ' . $filterValue);
+                                // dump($value . ' = ' . $filterValue . ' ' . $find);
                                 break;
                         }
                     }
-                    // dump($filterValue . ' ' . $value);
 
                 } elseif (is_array($filterValue)) {
-                    // dump('інше');
                     $filterValue = array_values($filterValue);
 
                     if ($type === 'between' && count($filterValue) === 2) {
@@ -200,25 +198,8 @@ trait Filters
                     }
                 }
             }
-
             if (!$find && $notNullValue !== 0) return false;
         }
-
         return true;
     }
-
-    // public function binding($collection, $bindWith, $roles)
-    // {
-    //     [
-    //         'item' => ['subjects', 'rank_id'],
-    //         'bind' => 'id',
-    //         'needle' => 'all', ['name', 'rank'], ['name', 'rank']
-    //         'bindName' => 
-
-    //     ]
-        
-
-
-
-    // }
 }

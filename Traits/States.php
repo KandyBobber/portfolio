@@ -14,14 +14,17 @@ trait States
 {
     use Filters;
     /**
-     * Виводить повний штат можливі фільтри, можливі параметри ['onlyState'],['withPeople'],['onlyWithPeople'],['withMarks']
-     * @param \Illuminate\Http\Request $request
+     * Виводить повний штат,можливі параметри ['onlyState','withPeople','onlyWithPeople','withMarks', 'route' => 'state']
+     * Та Route де передається шлях який вставити в фільтри для повернення в цей самий вивід
+     * @param \Illuminate\Http\Request $request є фільтраційним
      * @param array $paramArr
      * @return mixed
      */
     public function allState(Request $request, array $paramArr = ['withPeople', 'withMarks']) {
+        // dd($request);
+        // dd('01.01.2020' < '02.01.2020');
         /**
-         * Можливі фільтри просто потрібно передати значення request
+         * Можливі фільтри, просто потрібно передати значення в request з назвою змінної що вказана в списку
          * state
          * all - true
          * @date - date
@@ -44,23 +47,23 @@ trait States
          * @mark
          */
 
-        $onlyState = (in_array('onlyState', $paramArr)) ? true : false;
-        $withPeople = (in_array('withPeople', $paramArr)) ? true : false;
-        $onlyWithPeople = (in_array('onlyWithPeople', $paramArr)) ? true : false;
-        $withMarks = (in_array('withMarks', $paramArr)) ? true : false;
+        // Перевіряю параметри
+        $onlyState = (in_array('onlyState', $paramArr)) ? true : false; // Повернути тільки штат
+        $withPeople = (in_array('withPeople', $paramArr)) ? true : false; // Штат з людьми
+        $onlyWithPeople = (in_array('onlyWithPeople', $paramArr)) ? true : false; // Тільки там де є люди
+        $withMarks = (in_array('withMarks', $paramArr)) ? true : false; // З мітками
         
         $request->merge(['route' => (!empty($paramArr['route']) ? $paramArr['route'] : 'state')]);
         $request->merge(['method' => (!empty($paramArr['method']) ? $paramArr['method'] : 'get')]);
-
-        //getting standart date
-        if (!isset($request->date)) $request->merge(['date' => Carbon::today()->format('Y-m-d')]);
         $request->merge(['paramArr' => $paramArr]);
 
-        $dates = $this->dateChange($request);
+        // Формую дати
+        $dates = $this->dateChange($request, $withMarks);
 
-        //getting all state
+        // Отримую штат
         $states = $this->getStates(clone $request);
 
+        // Якщо з людьми та мітками
         if ($withPeople) {
             $states = $this->withPeople($request, $states);
 
@@ -84,16 +87,27 @@ trait States
         }
     }
 
-    protected function getStates($request) {
-        //unset for filter
-        $request = clone $request;
-        if (!empty($request->all)) $request->offsetUnset('date');
+    /**
+     * Отримую дані по штату та фільтрую їх
+     * @param \Illuminate\Http\Request $request
+     * @return \Illuminate\Database\Eloquent\Collection array
+     */
+    protected function getStates(Request $request) {
+        $states = State::with(['rank']);
 
-        $states = State::with(['rank'])
-        ->orderBy('num')
+        // Обмеження по даті, якщо немає отримати всі
+        if (empty($request->all)) {
+            $states = $states->where('active', '<=', $request->date)
+            ->where('no_active', null)
+    
+            ->orWhere('active', '<=', $request->date)
+            ->where('no_active', '>', $request->date);
+        }
+
+        $states = $states->orderBy('num')
         ->get();
 
-        //for not delete
+        // Отримую прив'язку людей щоб зрозуміти які посади можна видалити
         $stateNotDelete = People::with([
             'states' => function ($query) {
                 $query->select('states.id', 'people_morphs.change_date');
@@ -104,8 +118,10 @@ trait States
         ->whereHas('states')
         ->get();
 
+        // Отримую звання
         $allRanks = Rank::get();
 
+        // Пов'язую штат з додатковими даними
         foreach ($states as $state_key => $state) {
             /**
              * State additional options
@@ -113,6 +129,7 @@ trait States
              * @stateRank
              * @delete
              */
+            // Так це можна перенести в запит і отримувати через join
             foreach ($allRanks as $rank) {
                 if ($rank->id === $state->rank_id) {
                     $states[$state_key]->stateRound = $rank->round;
@@ -132,6 +149,7 @@ trait States
             }
         }
 
+        // фільтрую штатні дані
         return $this->filter($states, $request, 'statesFilters');
     }
 
@@ -176,23 +194,36 @@ trait States
         return compact('ranksArr', 'baseArr', 'companyArr', 'ranksArrRound', 'service_typeArr', 'marksArr');
     }
 
-    protected function dateChange($request) {
+    /**
+     * Метод що створює потрібні дані по даті
+     * @param \Illuminate\Http\Request $request
+     * @param bool $withMarks
+     * @return array
+     */
+    protected function dateChange(Request $request, $withMarks) {
+
+        // Перевіряю та ініціалізую розширення дати
         $dop = !empty($request->dop) ? $request->dop : 0;
         $request->offsetUnset('dop');
 
+        // Первіряю та ініціалізую дату початку
         if (!empty($request->date)) {
             $startDate = $request->date;
             $startDate = Carbon::createFromFormat('Y-m-d', $startDate)->addDays(-$dop);
         } else {
-            $now = Carbon::now();
-            $monthFirst = $now->format('m');
-            $yearFirst = $now->format('Y');
-            $startDate = Carbon::createFromFormat('Y-m-d', "$yearFirst-$monthFirst-01")->addDays(-$dop);
+            if ($withMarks) {
+                $now = Carbon::now();
+                $monthFirst = $now->format('m');
+                $yearFirst = $now->format('Y');
+                $startDate = Carbon::createFromFormat('Y-m-d', "$yearFirst-$monthFirst-01")->addDays(-$dop);
+            } else {
+                $startDate = Carbon::today();
+            }
         }
         $request->offsetUnset('date');
         $request->merge(['date' => $startDate->format('Y-m-d')]);
 
-
+        // Дату кінця
         if (!empty($request->endDate) && $startDate->format('Y-m-d') < $request->endDate) {
             $endDate = $request->endDate;
             $endDate = Carbon::createFromFormat('Y-m-d', $endDate)->addDays($dop);
@@ -211,9 +242,16 @@ trait States
         return compact('startDate', 'endDate');
     }
 
-    protected function withMarks($request, $states) {
+    /**
+     * Отримую та прив'язую до штату мітки з даними про людину по дню
+     * @param \Illuminate\Http\Request $request
+     * @param mixed $states
+     * @return mixed
+     */
+    protected function withMarks(Request $request, $states) {
         $allmarks = Mark::get();
-        //отримую потрібний проміжок
+
+        // отримую потрібний проміжок
         $monthMarks = PeopleMark::
         join('marks', 'people_mark.mark_id', '=', 'marks.id')
         ->select('people_mark.*', 'marks.name', 'marks.description', 'marks.weapon', 'marks.time', 'marks.location', 'marks.color')
@@ -222,7 +260,7 @@ trait States
         ->where('people_mark.change_date', '<=', $request->endDate)
         ->get();
 
-        // отримую останю зміну до проміжку
+        // отримую список останніх зміних до потрібного проміжку, щоб розуміти з чого почати
         $latestMarks = DB::table('people_mark')
         ->select(DB::raw('people_id, MAX(change_date) AS latest_date'))
         ->where('people_mark.change_date', '<', $request->date)
@@ -237,6 +275,7 @@ trait States
         ->select('people_mark.*', 'marks.name', 'marks.description', 'marks.weapon', 'marks.time', 'marks.location', 'marks.color')
         ->get();
 
+        // Підкидую мітки в штат
         foreach ($states as $state_key => $state) {
             if (isset($state->people_id)) {
                 $monthMarksArr = [];
@@ -262,7 +301,6 @@ trait States
             }
         }
 
-        // dd($states);
         return $this->filter($states, $request, [
             [
                 ['colName' => 'name', 'requestName' => 'mark'],
@@ -270,7 +308,14 @@ trait States
         ], ['monthMarks']);
     }
 
-    protected function withPeople($request, $states) {
+    
+    /**
+     * Отримую людей та підкидую їх до штату по потребі
+     * @param \Illuminate\Http\Request $request
+     * @param mixed $states
+     * @return mixed
+     */
+    protected function withPeople(Request $request, $states) {
         $people = $this->getPeople($request);
         /**
          * State additional options
@@ -287,11 +332,10 @@ trait States
             $states[$state_key]->service_type = '';
             //add info
             foreach ($people as $people_i) {
-                if (!empty($people_i->states[0]->id) && ($people_i->states[0]->id === $state->id)) {
-
+                if (!empty($people_i->states->first()->id) && ($people_i->states->first()->id === $state->id)) {
                     // Особиста інформація
-                    if (!empty($people_i->subjects[0])) {
-                        $info = $people_i->subjects[0];
+                    if (!empty($people_i->subjects->first())) {
+                        $info = $people_i->subjects->first();
 
                         $states[$state_key]->pib .= $info->last_name.' '.mb_substr($info->first_name,1,1).'.'.mb_substr($info->middle_name,1,1).'.';
 
@@ -299,8 +343,8 @@ trait States
                     }
         
                     // Звання
-                    if (!empty($people_i->ranks[0])) {
-                        $info = $people_i->ranks[0];
+                    if (!empty($people_i->ranks->first())) {
+                        $info = $people_i->ranks->first();
                         $states[$state_key]->rankShort .= "$info->short";
                         $states[$state_key]->service_type .= "$info->service_type";
                     }
@@ -310,11 +354,16 @@ trait States
                 }
             }
         }
-
+        
         return $this->filter($states, $request, 'statesPeopleFilters');
     }
 
-    protected function getPeople($request) {
+    /**
+     * Отримує людей для штату
+     * @param \Illuminate\Http\Request $request
+     * @return mixed
+     */
+    protected function getPeople(Request $request) {
         //getting all people
         $people = People::with(['subjects' => function ($query) {
                 $query->select('id', 'people_id', 'last_name', 'first_name', 'middle_name',
